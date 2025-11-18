@@ -10,6 +10,7 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
     firstName: '',
     lastName: '',
     companyName: '',
+    email: '', // Add email field
     addressLine1: '',
     addressLine2: '',
     city: '',
@@ -111,6 +112,8 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
     }));
   };
 
+  const [isProcessing, setIsProcessing] = useState(false);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -120,15 +123,54 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
       return;
     }
 
-    // Store form data in localStorage so you can retrieve it later
-    localStorage.setItem('paymentFormData', JSON.stringify(formData));
+    // Validate required bank account fields
+    if (!formData.accountNumber || !formData.routingNumber) {
+      alert('Please enter bank account details.');
+      return;
+    }
 
-    // TODO: Replace this URL with your actual Stripe Payment Link
-    // Get it from: https://dashboard.stripe.com/payment-links
-    const stripePaymentLink = 'https://buy.stripe.com/YOUR_PAYMENT_LINK_HERE';
-    
-    // Redirect to Stripe for payment
-    window.location.href = stripePaymentLink;
+    // Get payment amount from user
+    const amount = prompt('Enter payment amount in USD (e.g., 100 for $100):');
+    if (!amount || isNaN(Number(amount))) {
+      alert('Invalid amount entered.');
+      return;
+    }
+
+    setIsProcessing(true);
+
+    try {
+      // Call backend API to process bank payment
+      const response = await fetch('/api/create-bank-payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          formData,
+          amount: Number(amount),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Payment failed');
+      }
+
+      // Success!
+      alert(`Payment successful! Charge ID: ${data.chargeId}`);
+      console.log('Payment details:', data);
+      
+      // Reset form
+      window.location.reload();
+
+    } catch (error) {
+      console.error('Payment error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      alert(`Payment failed: ${errorMessage}`);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // Background images mapping
@@ -185,6 +227,22 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
               value={formData.companyName}
               onChange={handleInputChange}
               className="form-input"
+              required
+            />
+          </div>
+
+          {/* Email */}
+          <div className="form-section">
+            <label className="field-label">
+              Email Address <span className="required">*</span>
+            </label>
+            <input
+              type="email"
+              name="email"
+              value={formData.email}
+              onChange={handleInputChange}
+              className="form-input"
+              placeholder="your@email.com"
               required
             />
           </div>
@@ -639,13 +697,9 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
           </p>
 
           {/* Submit Button */}
-          <button type="submit" className="submit-button">
-            Submit
+          <button type="submit" className="submit-button" disabled={isProcessing}>
+            {isProcessing ? 'Processing...' : 'Submit Payment'}
           </button>
-
-          {/* TODO: STRIPE INTEGRATION POINT #2 */}
-          {/* Add Stripe Elements here for card payments if needed */}
-          {/* Example: <CardElement options={cardElementOptions} /> */}
         </form>
       </div>
     </div>
