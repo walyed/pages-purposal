@@ -114,14 +114,21 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // TODO: STRIPE INTEGRATION POINT #1
-    // Add your Stripe payment processing logic here
-    // Example:
-    // const stripe = await loadStripe('your_publishable_key');
-    // const { error } = await stripe.confirmPayment({ ... });
+    // Validate authorization checkbox
+    if (!formData.authorization) {
+      alert('Please authorize the payment by checking the checkbox.');
+      return;
+    }
 
-    console.log('Form submitted:', formData);
-    alert('Form submitted! Check console for data. Integrate with Stripe API here.');
+    // Store form data in localStorage so you can retrieve it later
+    localStorage.setItem('paymentFormData', JSON.stringify(formData));
+
+    // TODO: Replace this URL with your actual Stripe Payment Link
+    // Get it from: https://dashboard.stripe.com/payment-links
+    const stripePaymentLink = 'https://buy.stripe.com/YOUR_PAYMENT_LINK_HERE';
+    
+    // Redirect to Stripe for payment
+    window.location.href = stripePaymentLink;
   };
 
   // Background images mapping
