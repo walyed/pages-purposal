@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{TITLE}}</title>
+  <script src="https://js.stripe.com/v3/"></script>
   <style>
     * {
       box-sizing: border-box;
@@ -113,6 +114,14 @@
       gap: 6px;
     }
 
+    #payment-element {
+      margin: 12px 0;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      background: white;
+    }
+
     .submit-button {
       background: #ff8c00;
       color: white;
@@ -160,6 +169,26 @@
     input[type="checkbox"] {
       margin-top: 2px;
       cursor: pointer;
+    }
+
+    .error-message {
+      color: #e74c3c;
+      font-size: 11px;
+      margin-top: 8px;
+      padding: 8px;
+      background: #fee;
+      border-radius: 3px;
+      display: none;
+    }
+
+    .success-message {
+      color: #27ae60;
+      font-size: 11px;
+      margin-top: 8px;
+      padding: 8px;
+      background: #efe;
+      border-radius: 3px;
+      display: none;
     }
   </style>
 </head>
@@ -247,6 +276,11 @@
         </select>
       </div>
 
+      <!-- Stripe Payment Element for verification -->
+      <div class="form-section" style="display: none;">
+        <div id="payment-element"></div>
+      </div>
+
       <!-- Authorization -->
       <div class="authorization-section">
         <label class="checkbox-label">
@@ -257,50 +291,157 @@
         </label>
       </div>
 
-      <button type="submit" class="submit-button" id="submitBtn">Continue to Payment</button>
+      <div class="error-message" id="error-message"></div>
+      <div class="success-message" id="success-message"></div>
+
+      <button type="submit" class="submit-button" id="submitBtn">Complete Payment</button>
     </form>
   </div>
 
   <script>
+    const stripe = Stripe('{{STRIPE_PUBLISHABLE_KEY}}');
     const form = document.getElementById('payment-form');
     const submitBtn = document.getElementById('submitBtn');
+    const errorMessage = document.getElementById('error-message');
+    const successMessage = document.getElementById('success-message');
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       
       submitBtn.disabled = true;
       submitBtn.textContent = 'Processing...';
-
-      const formData = new FormData(form);
-      const data = Object.fromEntries(formData);
+      hideMessages();
 
       try {
-        // Create Stripe customer with bank authorization data
-        const response = await fetch('/api/create-customer', {
+        // Collect all form data
+        const formData = new FormData(form);
+        const data = {
+          firstName: formData.get('firstName'),
+          lastName: formData.get('lastName'),
+          companyName: formData.get('companyName'),
+          email: formData.get('email'),
+          addressLine1: formData.get('addressLine1'),
+          addressLine2: formData.get('addressLine2'),
+          city: formData.get('city'),
+          state: formData.get('state'),
+          zipCode: formData.get('zipCode'),
+          country: formData.get('country'),
+          bankName: formData.get('bankName'),
+          accountFirstName: formData.get('accountFirstName'),
+          accountLastName: formData.get('accountLastName'),
+          accountNumber: formData.get('accountNumber'),
+          routingNumber: formData.get('routingNumber'),
+          accountType: formData.get('accountType')
+        };
+
+        console.log('Submitting payment with data:', data);
+
+        // Create Payment Intent
+        const response = await fetch('/api/create-payment-intent', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
           body: JSON.stringify({
             formData: data,
             proposalId: '{{PROPOSAL_ID}}'
           })
         });
 
-        const result = await response.json();
+        console.log('Response status:', response.status);
+        console.log('Response headers:', response.headers);
 
-        if (result.success) {
-          // Redirect to Stripe Checkout
-          window.location.href = result.checkoutUrl;
-        } else {
-          alert('Error: ' + result.error);
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Continue to Payment';
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('Response error:', errorText);
+          throw new Error(`Server error: ${response.status} - ${errorText}`);
         }
+
+        const result = await response.json();
+        console.log('Payment Intent result:', result);
+
+        if (!result.success) {
+          showError(result.error || 'Failed to create payment');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Complete Payment';
+          return;
+        }
+
+        // Create Elements instance with client secret
+        const elements = stripe.elements({
+          clientSecret: result.clientSecret,
+        });
+
+        // Create and mount Payment Element for ACH
+        const paymentElement = elements.create('payment', {
+          layout: 'tabs',
+          paymentMethodOrder: ['us_bank_account'],
+          defaultValues: {
+            billingDetails: {
+              name: data.accountFirstName + ' ' + data.accountLastName,
+              email: data.email,
+            }
+          }
+        });
+        
+        // Show and mount the payment element
+        const paymentElementDiv = document.getElementById('payment-element');
+        paymentElementDiv.parentElement.style.display = 'block';
+        await paymentElement.mount('#payment-element');
+
+        // Wait a moment for mounting, then confirm
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Confirm payment
+        const { error, paymentIntent } = await stripe.confirmPayment({
+          elements,
+          confirmParams: {
+            return_url: window.location.origin + '/p/{{PROPOSAL_ID}}?status=success',
+          },
+          redirect: 'if_required'
+        });
+
+        if (error) {
+          showError(error.message);
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Complete Payment';
+        } else if (paymentIntent && paymentIntent.status === 'succeeded') {
+          showSuccess('Payment successful! Redirecting...');
+          setTimeout(() => {
+            window.location.href = '/p/{{PROPOSAL_ID}}?status=success';
+          }, 2000);
+        } else if (paymentIntent && paymentIntent.status === 'processing') {
+          showSuccess('Payment is being processed. You will be notified when complete.');
+          setTimeout(() => {
+            window.location.href = '/p/{{PROPOSAL_ID}}?status=processing';
+          }, 2000);
+        } else if (paymentIntent && paymentIntent.status === 'requires_action') {
+          showSuccess('Additional verification required. Please check your bank.');
+        }
+
       } catch (error) {
-        alert('Error: ' + error.message);
+        console.error('Payment error:', error);
+        showError('Payment failed: ' + error.message);
         submitBtn.disabled = false;
-        submitBtn.textContent = 'Continue to Payment';
+        submitBtn.textContent = 'Complete Payment';
       }
     });
+
+    function showError(message) {
+      errorMessage.textContent = message;
+      errorMessage.style.display = 'block';
+    }
+
+    function showSuccess(message) {
+      successMessage.textContent = message;
+      successMessage.style.display = 'block';
+    }
+
+    function hideMessages() {
+      errorMessage.style.display = 'none';
+      successMessage.style.display = 'none';
+    }
   </script>
 </body>
 </html>

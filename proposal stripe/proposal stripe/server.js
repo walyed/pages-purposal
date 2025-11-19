@@ -8,15 +8,32 @@ const proposals = require("./proposals");
 
 const app = express();
 
-// Webhook хоче "сирий" body, а інші маршрути можуть юзати JSON
-app.use(
-  "/webhook",
-  express.raw({ type: "application/json" }) // тільки для /webhook
-);
-app.use(express.json()); // для всіх інших роутів
-app.use(express.static('public')); // для статичних файлів (background images)
+// Debug middleware first - log all requests
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.path}`);
+  next();
+});
+
+// JSON parser for API routes (must come before routes)
+app.use(express.json());
+
+// URL encoded parser
+app.use(express.urlencoded({ extended: true }));
+
+// Static files
+app.use(express.static('public'));
 
 const BASE_URL = process.env.BASE_URL || "http://localhost:4242";
+
+// === TEST ROUTE ===
+app.get('/test', (req, res) => {
+  res.json({ message: 'Server is working!' });
+});
+
+app.post('/test-post', (req, res) => {
+  console.log('Test POST received:', req.body);
+  res.json({ message: 'POST is working!', body: req.body });
+});
 
 // === 1. Функція, яка додає комісію Stripe до суми (клієнт оплачує fee) ===
 function addStripeFee(netAmountCents) {
@@ -121,11 +138,103 @@ app.get("/pay/:id", (req, res) => {
   html = html.replace(/{{BILLING_NOTE}}/g, billingNote);
   html = html.replace(/{{PROPOSAL_ID}}/g, prop.id);
   html = html.replace(/{{BACKGROUND_IMAGE}}/g, '/background-3.jpeg');
+  html = html.replace(/{{STRIPE_PUBLISHABLE_KEY}}/g, process.env.STRIPE_PUBLISHABLE_KEY);
 
   res.send(html);
 });
 
-// === 4. API: Create customer with bank authorization data then create checkout ===
+// === 4. API: Create Payment Intent for direct ACH payment ===
+app.post("/api/create-payment-intent", async (req, res) => {
+  console.log('📥 Payment Intent Request received');
+  console.log('Request body:', req.body);
+  console.log('Content-Type:', req.headers['content-type']);
+  
+  const { formData, proposalId } = req.body;
+  
+  if (!formData || !proposalId) {
+    console.error('Missing formData or proposalId:', { formData, proposalId });
+    return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+  
+  const prop = proposals.find((p) => p.id === proposalId);
+
+  if (!prop) {
+    return res.status(404).json({ success: false, error: "Proposal not found" });
+  }
+
+  try {
+    console.log('Creating Payment Intent for proposal:', proposalId);
+    
+    // Create Stripe Customer with form data
+    const customer = await stripe.customers.create({
+      name: `${formData.firstName || ''} ${formData.lastName || ''}`.trim(),
+      email: formData.email || undefined,
+      address: {
+        line1: formData.addressLine1 || '',
+        line2: formData.addressLine2 || undefined,
+        city: formData.city || '',
+        state: formData.state || '',
+        postal_code: formData.zipCode || '',
+        country: 'US',
+      },
+      metadata: {
+        proposalId: proposalId,
+        companyName: formData.companyName || '',
+      },
+    });
+
+    console.log('✅ Customer created:', customer.id);
+
+    const gross = addStripeFee(prop.amountNet);
+    const isSubscription = !!prop.recurring;
+
+    if (isSubscription) {
+      // For subscriptions, we still need to use Checkout or SetupIntent
+      // This is a limitation - direct ACH subscriptions are complex
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Subscriptions require Stripe Checkout. Please use one-time payments for direct ACH.' 
+      });
+    }
+
+    // Create Payment Intent for one-time ACH payment
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: gross,
+      currency: prop.currency,
+      customer: customer.id,
+      payment_method_types: ['us_bank_account'],
+      payment_method_options: {
+        us_bank_account: {
+          financial_connections: {
+            permissions: ['payment_method', 'balances'],
+          },
+        },
+      },
+      metadata: {
+        proposal_id: prop.id,
+        client_name: prop.clientName,
+        customer_id: customer.id,
+      },
+    });
+
+    console.log('✅ Payment Intent created:', paymentIntent.id);
+
+    res.json({ 
+      success: true, 
+      clientSecret: paymentIntent.client_secret,
+      customerId: customer.id 
+    });
+
+  } catch (err) {
+    console.error("Error creating Payment Intent:", err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+});
+
+// === 5. OLD API: Create customer and redirect to Checkout (kept for backward compatibility) ===
 app.post("/api/create-customer", async (req, res) => {
   const { formData, proposalId } = req.body;
   const prop = proposals.find((p) => p.id === proposalId);
@@ -312,7 +421,14 @@ app.post("/webhook", (req, res) => {
   let event;
 
   try {
-    event = JSON.parse(req.body.toString());
+    // Handle both raw body and parsed JSON
+    if (typeof req.body === 'string') {
+      event = JSON.parse(req.body);
+    } else if (Buffer.isBuffer(req.body)) {
+      event = JSON.parse(req.body.toString());
+    } else {
+      event = req.body;
+    }
   } catch (err) {
     console.error("Webhook JSON parse error:", err);
     return res.status(400).send(`Webhook error: ${err.message}`);
@@ -351,10 +467,15 @@ async function handleInvoicePaymentSucceeded(subscriptionId) {
 
 const PORT = process.env.PORT || 4242;
 
+console.log('About to start listening on port:', PORT);
+console.log('VERCEL env var:', process.env.VERCEL);
+
 // Export for Vercel serverless
 if (process.env.VERCEL) {
+  console.log('Exporting for Vercel');
   module.exports = app;
 } else {
+  console.log('Starting local server...');
   app.listen(PORT, () => {
     console.log(`✅ Server running on ${BASE_URL}`);
   });
