@@ -147,13 +147,12 @@ app.get("/pay/:id", (req, res) => {
 app.post("/api/create-payment-intent", async (req, res) => {
   console.log('📥 Payment Intent Request received');
   console.log('Request body:', req.body);
-  console.log('Content-Type:', req.headers['content-type']);
   
-  const { formData, proposalId } = req.body;
+  const { proposalId } = req.body;
   
-  if (!formData || !proposalId) {
-    console.error('Missing formData or proposalId:', { formData, proposalId });
-    return res.status(400).json({ success: false, error: "Missing required fields" });
+  if (!proposalId) {
+    console.error('Missing proposalId:', proposalId);
+    return res.status(400).json({ success: false, error: "Missing proposal ID" });
   }
   
   const prop = proposals.find((p) => p.id === proposalId);
@@ -164,33 +163,11 @@ app.post("/api/create-payment-intent", async (req, res) => {
 
   try {
     console.log('Creating Payment Intent for proposal:', proposalId);
-    
-    // Create Stripe Customer with form data
-    const customer = await stripe.customers.create({
-      name: `${formData.firstName || ''} ${formData.lastName || ''}`.trim(),
-      email: formData.email || undefined,
-      address: {
-        line1: formData.addressLine1 || '',
-        line2: formData.addressLine2 || undefined,
-        city: formData.city || '',
-        state: formData.state || '',
-        postal_code: formData.zipCode || '',
-        country: 'US',
-      },
-      metadata: {
-        proposalId: proposalId,
-        companyName: formData.companyName || '',
-      },
-    });
-
-    console.log('✅ Customer created:', customer.id);
 
     const gross = addStripeFee(prop.amountNet);
     const isSubscription = !!prop.recurring;
 
     if (isSubscription) {
-      // For subscriptions, we still need to use Checkout or SetupIntent
-      // This is a limitation - direct ACH subscriptions are complex
       return res.status(400).json({ 
         success: false, 
         error: 'Subscriptions require Stripe Checkout. Please use one-time payments for direct ACH.' 
@@ -198,10 +175,10 @@ app.post("/api/create-payment-intent", async (req, res) => {
     }
 
     // Create Payment Intent for one-time ACH payment
+    // Customer and payment method will be created by Stripe Elements
     const paymentIntent = await stripe.paymentIntents.create({
       amount: gross,
       currency: prop.currency,
-      customer: customer.id,
       payment_method_types: ['us_bank_account'],
       payment_method_options: {
         us_bank_account: {
@@ -213,7 +190,6 @@ app.post("/api/create-payment-intent", async (req, res) => {
       metadata: {
         proposal_id: prop.id,
         client_name: prop.clientName,
-        customer_id: customer.id,
       },
     });
 
@@ -222,7 +198,7 @@ app.post("/api/create-payment-intent", async (req, res) => {
     res.json({ 
       success: true, 
       clientSecret: paymentIntent.client_secret,
-      customerId: customer.id 
+      paymentIntentId: paymentIntent.id
     });
 
   } catch (err) {

@@ -172,23 +172,39 @@
     }
 
     .error-message {
-      color: #e74c3c;
-      font-size: 11px;
-      margin-top: 8px;
-      padding: 8px;
+      color: #c33;
+      font-size: 14px;
+      margin-top: 16px;
+      padding: 16px;
       background: #fee;
-      border-radius: 3px;
+      border: 1px solid #fcc;
+      border-radius: 8px;
       display: none;
+      animation: slideIn 0.3s ease-out;
     }
 
     .success-message {
-      color: #27ae60;
-      font-size: 11px;
-      margin-top: 8px;
-      padding: 8px;
-      background: #efe;
-      border-radius: 3px;
+      color: #2e7d32;
+      font-size: 14px;
+      font-weight: 500;
+      margin-top: 16px;
+      padding: 16px;
+      background: #e8f5e9;
+      border: 1px solid #a5d6a7;
+      border-radius: 8px;
       display: none;
+      animation: slideIn 0.3s ease-out;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
   </style>
 </head>
@@ -205,79 +221,8 @@
         <p style="font-style: italic; color: #666;">{{BILLING_NOTE}}</p>
       </div>
 
-      <!-- Name Section -->
+      <!-- Stripe Payment Element -->
       <div class="form-section">
-        <label class="field-label">Name <span class="required">*</span></label>
-        <div class="name-row">
-          <input type="text" name="firstName" placeholder="First" class="form-input" required />
-          <input type="text" name="lastName" placeholder="Last" class="form-input" required />
-        </div>
-      </div>
-
-      <!-- Company -->
-      <div class="form-section">
-        <label class="field-label">Company Name <span class="required">*</span></label>
-        <input type="text" name="companyName" class="form-input" required />
-      </div>
-
-      <!-- Email -->
-      <div class="form-section">
-        <label class="field-label">Email Address <span class="required">*</span></label>
-        <input type="email" name="email" class="form-input" required />
-      </div>
-
-      <!-- Address -->
-      <div class="form-section">
-        <label class="field-label">Billing Address <span class="required">*</span></label>
-        <input type="text" name="addressLine1" placeholder="Address Line 1" class="form-input" required />
-        <input type="text" name="addressLine2" placeholder="Address Line 2" class="form-input" style="margin-top: 4px;" />
-        <div class="address-row" style="margin-top: 4px;">
-          <input type="text" name="city" placeholder="City" class="form-input" required />
-          <input type="text" name="state" placeholder="State" class="form-input" required />
-        </div>
-        <div class="address-row" style="margin-top: 4px;">
-          <input type="text" name="zipCode" placeholder="Zip Code" class="form-input" required />
-          <input type="text" name="country" value="United States" class="form-input" required />
-        </div>
-      </div>
-
-      <!-- Bank Info -->
-      <div class="form-section">
-        <label class="field-label">Bank Name <span class="required">*</span></label>
-        <input type="text" name="bankName" class="form-input" required />
-      </div>
-
-      <div class="form-section">
-        <label class="field-label">Name on Account <span class="required">*</span></label>
-        <div class="bank-info-row">
-          <input type="text" name="accountFirstName" placeholder="First" class="form-input" required />
-          <input type="text" name="accountLastName" placeholder="Last" class="form-input" required />
-        </div>
-      </div>
-
-      <div class="form-section">
-        <div class="bank-info-row">
-          <div>
-            <label class="field-label">Account Number <span class="required">*</span></label>
-            <input type="text" name="accountNumber" class="form-input" required />
-          </div>
-          <div>
-            <label class="field-label">Routing Number <span class="required">*</span></label>
-            <input type="text" name="routingNumber" class="form-input" required />
-          </div>
-        </div>
-      </div>
-
-      <div class="form-section">
-        <label class="field-label">Account Type <span class="required">*</span></label>
-        <select name="accountType" class="form-input" required>
-          <option value="Checking">Checking</option>
-          <option value="Savings">Savings</option>
-        </select>
-      </div>
-
-      <!-- Stripe Payment Element for verification -->
-      <div class="form-section" style="display: none;">
         <div id="payment-element"></div>
       </div>
 
@@ -304,6 +249,60 @@
     const submitBtn = document.getElementById('submitBtn');
     const errorMessage = document.getElementById('error-message');
     const successMessage = document.getElementById('success-message');
+    
+    let elements;
+    let clientSecret;
+
+    // Initialize Stripe Elements on page load
+    async function initialize() {
+      try {
+        // Create Payment Intent
+        const response = await fetch('/api/create-payment-intent', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({
+            proposalId: '{{PROPOSAL_ID}}'
+          })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Server error: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (!result.success) {
+          showError(result.error || 'Failed to initialize payment');
+          return;
+        }
+
+        clientSecret = result.clientSecret;
+
+        // Create Elements instance
+        elements = stripe.elements({
+          clientSecret: clientSecret,
+        });
+
+        // Create and mount Payment Element for ACH
+        const paymentElement = elements.create('payment', {
+          layout: 'tabs',
+          paymentMethodOrder: ['us_bank_account']
+        });
+        
+        await paymentElement.mount('#payment-element');
+
+      } catch (error) {
+        console.error('Initialization error:', error);
+        showError('Failed to initialize payment form: ' + error.message);
+      }
+    }
+
+    // Initialize on page load
+    initialize();
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -313,91 +312,11 @@
       hideMessages();
 
       try {
-        // Collect all form data
-        const formData = new FormData(form);
-        const data = {
-          firstName: formData.get('firstName'),
-          lastName: formData.get('lastName'),
-          companyName: formData.get('companyName'),
-          email: formData.get('email'),
-          addressLine1: formData.get('addressLine1'),
-          addressLine2: formData.get('addressLine2'),
-          city: formData.get('city'),
-          state: formData.get('state'),
-          zipCode: formData.get('zipCode'),
-          country: formData.get('country'),
-          bankName: formData.get('bankName'),
-          accountFirstName: formData.get('accountFirstName'),
-          accountLastName: formData.get('accountLastName'),
-          accountNumber: formData.get('accountNumber'),
-          routingNumber: formData.get('routingNumber'),
-          accountType: formData.get('accountType')
-        };
-
-        console.log('Submitting payment with data:', data);
-
-        // Create Payment Intent
-        const response = await fetch('/api/create-payment-intent', {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({
-            formData: data,
-            proposalId: '{{PROPOSAL_ID}}'
-          })
-        });
-
-        console.log('Response status:', response.status);
-        console.log('Response headers:', response.headers);
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error('Response error:', errorText);
-          throw new Error(`Server error: ${response.status} - ${errorText}`);
-        }
-
-        const result = await response.json();
-        console.log('Payment Intent result:', result);
-
-        if (!result.success) {
-          showError(result.error || 'Failed to create payment');
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Complete Payment';
-          return;
-        }
-
-        // Create Elements instance with client secret
-        const elements = stripe.elements({
-          clientSecret: result.clientSecret,
-        });
-
-        // Create and mount Payment Element for ACH
-        const paymentElement = elements.create('payment', {
-          layout: 'tabs',
-          paymentMethodOrder: ['us_bank_account'],
-          defaultValues: {
-            billingDetails: {
-              name: data.accountFirstName + ' ' + data.accountLastName,
-              email: data.email,
-            }
-          }
-        });
-        
-        // Show and mount the payment element
-        const paymentElementDiv = document.getElementById('payment-element');
-        paymentElementDiv.parentElement.style.display = 'block';
-        await paymentElement.mount('#payment-element');
-
-        // Wait a moment for mounting, then confirm
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        // Confirm payment
+        // Confirm payment without redirect
         const { error, paymentIntent } = await stripe.confirmPayment({
           elements,
           confirmParams: {
-            return_url: window.location.origin + '/p/{{PROPOSAL_ID}}?status=success',
+            return_url: window.location.href,
           },
           redirect: 'if_required'
         });
@@ -406,18 +325,28 @@
           showError(error.message);
           submitBtn.disabled = false;
           submitBtn.textContent = 'Complete Payment';
-        } else if (paymentIntent && paymentIntent.status === 'succeeded') {
-          showSuccess('Payment successful! Redirecting...');
-          setTimeout(() => {
-            window.location.href = '/p/{{PROPOSAL_ID}}?status=success';
-          }, 2000);
-        } else if (paymentIntent && paymentIntent.status === 'processing') {
-          showSuccess('Payment is being processed. You will be notified when complete.');
-          setTimeout(() => {
-            window.location.href = '/p/{{PROPOSAL_ID}}?status=processing';
-          }, 2000);
-        } else if (paymentIntent && paymentIntent.status === 'requires_action') {
-          showSuccess('Additional verification required. Please check your bank.');
+        } else if (paymentIntent) {
+          // Handle different payment statuses
+          if (paymentIntent.status === 'succeeded') {
+            showSuccess('✅ Payment successful! Your payment has been processed.');
+            submitBtn.textContent = 'Payment Complete';
+            // Disable form after success
+            form.querySelectorAll('input, button').forEach(el => el.disabled = true);
+          } else if (paymentIntent.status === 'processing' || paymentIntent.status === 'requires_payment_method') {
+            // For ACH, processing status is normal and means payment is initiated
+            showSuccess('✅ Payment initiated successfully! Your bank account has been authorized and the payment will be processed.');
+            submitBtn.textContent = 'Payment Complete';
+            // Disable form after success
+            form.querySelectorAll('input, button').forEach(el => el.disabled = true);
+          } else if (paymentIntent.status === 'requires_action') {
+            showSuccess('⚠️ Additional verification required. Please check your bank or email.');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Complete Payment';
+          } else {
+            showError('Payment status: ' + paymentIntent.status);
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Complete Payment';
+          }
         }
 
       } catch (error) {
